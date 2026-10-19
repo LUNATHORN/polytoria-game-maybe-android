@@ -1,0 +1,80 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: 4.7.0
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_NOLOGO: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          lfs: true
+          submodules: recursive
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "build-tools;35.0.1" "platforms;android-35" "cmdline-tools;latest" "cmake;3.10.2.4988587" "ndk;28.1.13356709"
+
+      - uses: chickensoft-games/setup-godot@v2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: true
+          include-templates: true
+          cache: true
+
+      - name: Prepare export presets
+        working-directory: Polytoria
+        run: cp export_presets.cfg.template export_presets.cfg
+
+      - name: Install Android gradle build template
+        working-directory: Polytoria
+        run: |
+          ZIP=$(find "$HOME" -name android_source.zip | head -1)
+          echo "Template zip: $ZIP"
+          mkdir -p android/build
+          unzip -q -o "$ZIP" -d android/build
+          touch android/build/.gdignore
+          # Godot checks this matches the editor version
+          echo "$(godot --version | sed -E 's/\.[0-9a-f]{9}$//')" > android/.build_version
+          cat android/.build_version
+
+      - name: Create debug keystore
+        run: |
+          keytool -genkey -v -keystore "$RUNNER_TEMP/debug.keystore" -storepass android \
+            -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Export APK
+        working-directory: Polytoria
+        env:
+          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: ${{ runner.temp }}/debug.keystore
+          GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
+          GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
+        run: |
+          dotnet restore
+          godot --headless --build-solutions --quit
+          mkdir -p ../build
+          godot --headless --export-debug "Client Android APK" ../build/polytoria.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polytoria-apk
+          path: build/polytoria.apk
